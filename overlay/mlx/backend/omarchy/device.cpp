@@ -292,7 +292,7 @@ struct PhysicalDeviceInfo {
   CapabilityReport caps;
   // Hardware truth from discovery, never overridden by simulation.
   CapabilityReport hardware;
-  bool discrete{false};
+  VkPhysicalDeviceType type{VK_PHYSICAL_DEVICE_TYPE_OTHER};
 };
 
 // Process-wide Vulkan state. The VkInstance lives as long as the process;
@@ -767,8 +767,7 @@ bool Runtime::init_impl() {
 
     PhysicalDeviceInfo info;
     info.handle = pd;
-    info.discrete =
-        props2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    info.type = props2.properties.deviceType;
     info.support = std::move(support);
     info.caps = collect_capabilities(
         it,
@@ -786,13 +785,12 @@ bool Runtime::init_impl() {
         m3,
         m4,
         subgroup);
-    if (f13.subgroupSizeControl == VK_TRUE &&
-        (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
-        p13.minSubgroupSize != p13.maxSubgroupSize &&
-        p13.minSubgroupSize <= info.caps.subgroup_size &&
-        info.caps.subgroup_size <= p13.maxSubgroupSize) {
-      info.caps.required_subgroup_size = info.caps.subgroup_size;
-    }
+    info.caps.required_subgroup_size = required_subgroup_size(
+        f13.subgroupSizeControl == VK_TRUE,
+        p13.requiredSubgroupSizeStages,
+        p13.minSubgroupSize,
+        p13.maxSubgroupSize,
+        info.caps.subgroup_size);
     info.caps.icd_path = icd_path;
     info.caps.icd_source = icd_selection.packaged
         ? "packaged"
@@ -848,10 +846,15 @@ bool Runtime::init_impl() {
     return false;
   }
 
-  // Device 0 is the default: a discrete GPU beats an integrated one on the
-  // same host (an Intel iGPU enumerates ahead of an NVIDIA card).
-  std::stable_partition(supported.begin(), supported.end(),
-                        [](const PhysicalDeviceInfo& d) { return d.discrete; });
+  std::vector<VkPhysicalDeviceType> types;
+  for (const auto& d : supported) {
+    types.push_back(d.type);
+  }
+  std::vector<PhysicalDeviceInfo> ordered;
+  for (size_t i : device_order(types)) {
+    ordered.push_back(std::move(supported[i]));
+  }
+  supported = std::move(ordered);
   error.clear();
   // One lazily-filled slot per supported device; device() indexes this
   // vector directly, so it must match |supported| before ready flips.
@@ -981,6 +984,32 @@ DeviceSupport classify_physical_device(
       "' is not an Apple GPU running Omarchy Honeykrisp."
       " Set MLX_OMARCHY_ALLOW_NON_APPLE=1 to use it for development only.";
   return s;
+}
+
+uint32_t required_subgroup_size(
+    bool size_control,
+    VkShaderStageFlags required_stages,
+    uint32_t min_size,
+    uint32_t max_size,
+    uint32_t subgroup_size) {
+  if (!size_control || !(required_stages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+      min_size == max_size || subgroup_size < min_size ||
+      subgroup_size > max_size) {
+    return 0;
+  }
+  return subgroup_size;
+}
+
+std::vector<size_t> device_order(
+    const std::vector<VkPhysicalDeviceType>& types) {
+  std::vector<size_t> order(types.size());
+  for (size_t i = 0; i < order.size(); ++i) {
+    order[i] = i;
+  }
+  std::stable_partition(order.begin(), order.end(), [&](size_t i) {
+    return types[i] == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+  });
+  return order;
 }
 
 // --- Process-wide API -----------------------------------------------------
