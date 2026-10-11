@@ -142,6 +142,10 @@ struct CapabilityReport {
   // the load-bearing combination for the qmm_vec subgroup path.
   uint32_t subgroup_size{0};
   uint32_t subgroup_operations{0};
+  // Nonzero: pipelines pin this subgroup size. Vulkan 1.3 lets a driver
+  // vary it per pipeline (Intel runs small workgroups at 16 lanes), and
+  // every subgroup shader here assumes subgroup_size lanes.
+  uint32_t required_subgroup_size{0};
   // Capability simulation (MLX_OMARCHY_CAPS_SIM): set on a report that
   // is a named simulated profile, never on hardware discovery. The
   // profile name and the driver_variant axis it stands in for ride
